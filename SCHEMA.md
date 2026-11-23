@@ -234,7 +234,7 @@ presets:
       vllm: "vllm/vllm-openai:nightly-e68efc68…"  # pins this GPU's docker command
       dynamo: "ffbbaaa6…"                         # shown with the preset; also pip: [...], model_revision
     select:                                       # builder choices the preset implies
-      pd_router: dynamo                           # vllm | dynamo | smg | ascend (pd_cluster only)
+      pd_router: dynamo                           # vllm | dynamo | smg | llm-d | ascend (pd_cluster only)
       pd_connector: moriio                        # nixl | mooncake | mooncake_ascend | moriio: KV transfer
       frontend: rust
       features: { tool_calling: false, spec_decoding: false }   # true/false, or a mode key

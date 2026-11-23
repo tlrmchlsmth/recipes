@@ -261,11 +261,12 @@ export function renderCommand(recipe, variantKey, strategy, hwId, nodeCount, fea
   }
   if (!result) return null;
   if (result.frontendRequired) applied.frontend = result.frontendRequired;
-  // A URL cannot opt into Ascend PD without the active recipe declaration.
-  if (applied.pdRouter === "ascend") applied.pdRouter = result.pdRouter ?? "vllm";
+  // Report the effective router when Ascend or llm-d falls back.
+  if (["ascend", "llm-d"].includes(applied.pdRouter)) applied.pdRouter = result.pdRouter ?? "vllm";
+  if (result.routerUnavailableReason) applied.routerUnavailableReason = result.routerUnavailableReason;
   if (applied.pdConnector === "mooncake_ascend") applied.pdConnector = result.kvConnector?.selected ?? null;
   if (opts.out) Object.assign(opts.out, applied);
-  if (strict && sel.pd_router === "ascend" && result.routerUnavailableReason) {
+  if (strict && ["ascend", "llm-d"].includes(sel.pd_router) && result.routerUnavailableReason) {
     throw new Error(`Invalid preset ${presetPick}${pointPick ? ` at point ${pointPick}` : ""} in ${recipe.hf_id} (${hwId} / ${strategy}): ${result.routerUnavailableReason}`);
   }
   // A preset that names its KV transfer connector must get it.
@@ -381,6 +382,7 @@ export function renderCommand(recipe, variantKey, strategy, hwId, nodeCount, fea
       ...(result.workerInstall ? { worker_install: result.workerInstall } : {}),
       prefill,
       decode,
+      ...(result.decodeSidecar ? { decode_sidecar: result.decodeSidecar } : {}),
       router: result.router,
       router_config: result.routerConfig,
       ...(result.parserWarnings?.length ? { parser_warnings: result.parserWarnings } : {}),
@@ -776,7 +778,7 @@ export function resolveSelection(recipe, query, strategies, taxonomy) {
 
   const advancedById = Object.fromEntries([...ADVANCED_OPTIONS, ...(recipe.advanced_options || [])].map((o) => [o.id, o]));
   const advanced = (get("advanced") || "").split(",").filter((id) => advancedById[id]);
-  const pdRouter = ["dynamo", "smg", "ascend"].includes(get("pd_router")) ? get("pd_router") : "vllm";
+  const pdRouter = ["dynamo", "smg", "llm-d", "ascend"].includes(get("pd_router")) ? get("pd_router") : "vllm";
   const pdConnector = strategies.pd_cluster?.connectors?.[get("pd_connector")] ? get("pd_connector") : null;
   const dcp = parseIntParam(get("dcp"));
 
@@ -827,6 +829,7 @@ export function resolveSelection(recipe, query, strategies, taxonomy) {
     note("pd_router", get("pd_router"), applied.pdRouter, "incompatible with the selected PCP deployment");
     note("pd_connector", get("pd_connector"), applied.pdConnector, "incompatible with the selected PCP deployment");
   } else {
+    if (get("pd_router") === "llm-d") note("pd_router", "llm-d", applied.pdRouter, applied.routerUnavailableReason || "requires compatible prefill/decode pools");
     if (get("pd_router") === "ascend") note("pd_router", "ascend", applied.pdRouter, "requires an active Ascend PD preset for this hardware and variant");
     if (get("pd_connector") === "mooncake_ascend") note("pd_connector", "mooncake_ascend", applied.pdConnector, "requires an active Ascend PD preset and compatible router");
   }
