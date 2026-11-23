@@ -260,6 +260,55 @@ test("docker-disabled recipes omit containers across deployment layouts", () => 
   assert.ok(!Object.hasOwn(router, "dockerInstall"));
 });
 
+test("llm-d PD exports use serving heads and the decode sidecar's port", () => {
+  const hardware = "h200";
+  const recipe = {
+    hf_id: "example/model",
+    model: { model_id: "example/model" },
+    meta: { hardware: { [hardware]: "supported", mi300x: "supported" } },
+    variants: { default: { precision: "bf16", vram_minimum_gb: 1 } },
+    compatible_strategies: ["single_node_tp", "single_node_dep", "pd_cluster"],
+    strategy_overrides: {
+      pd_cluster: {
+        prefill: { extra_args: ["--port", "8101"] },
+        decode: { extra_args: ["--port", "8200"] },
+      },
+    },
+  };
+  const resolve = (params = {}) => resolveSelection(recipe, new URLSearchParams({
+    hardware, strategy: "pd_cluster", pd_router: "llm-d", preset: "baseline",
+    prefill_nodes: "2", decode_nodes: "2", prefill_mode: "tp", decode_mode: "tp", ...params,
+  }), strategies, taxonomy);
+  const resolved = resolve({ prefill_rank: "1", decode_rank: "1" });
+  const r = resolved.rendering;
+  assert.equal(resolved.selection.pd_router, "llm-d");
+  assert.equal(r.pd_connector, "nixl");
+  assert.ok(r.prefill.node_commands[1].argv.includes("--headless"));
+  assert.ok(r.decode.node_commands[1].argv.includes("--headless"));
+  assert.match(r.prefill.docker_command, /--network host/);
+  assert.match(r.decode_sidecar.command, /--port=(\d+) --model-server-port=8200/);
+  const [, sidecarPort] = r.decode_sidecar.command.match(/--port=(\d+) --model-server-port/);
+  assert.notEqual(sidecarPort, "8200");
+  assert.equal(r.router.command, resolve().rendering.router.command);
+  assert.match(r.router.command, /address: "\$PREFILL_NODE_1"\s+port: "8101"/);
+  assert.ok(r.router.command.includes('address: "$DECODE_NODE_1"\n    port: "' + sidecarPort + '"'));
+  assert.doesNotMatch(r.router.command, /(?:PREFILL|DECODE)_NODE_2/);
+
+  const md = selectionMarkdown(recipe, resolved, {
+    strategies, taxonomy, urls: { page: "https://example.org/example/model", json: "https://example.org/example/model.json" },
+  });
+  assert.ok(md.indexOf("### Decode\n") < md.indexOf("### Decode sidecar"));
+  assert.ok(md.indexOf("### Decode sidecar") < md.indexOf("### llm-d Router"));
+  assert.match(md, /export ROUTER_PORT="\$\{ROUTER_PORT:-30000\}"/);
+
+  for (const params of [{ hardware: "mi300x" }, { decode_mode: "dep" }]) {
+    const fallback = resolve(params);
+    assert.equal(fallback.rendering.pd_router, "vllm");
+    assert.equal(fallback.rendering.decode_sidecar, undefined);
+    assert.ok(fallback.selection.adjusted.some(({ param, used }) => param === "pd_router" && used === "vllm"));
+  }
+});
+
 test("an exact-GPU shm override reaches JSON and Markdown Docker exports", () => {
   const hardware = "ascend_910b";
   const recipe = {

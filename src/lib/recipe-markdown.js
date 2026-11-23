@@ -59,7 +59,7 @@ function serveSection(r) {
   }
   if (r.deploy_type === "pd_cluster") {
     const mc = r.mooncake;
-    out.push(`Disaggregated prefill/decode${r.pd_connector ? ` (KV transfer: \`${r.pd_connector}\`)` : ""}. ${mc || r.infra ? "Start in this order" : "Start both pools, then the router"}.`);
+    out.push(`Disaggregated prefill/decode${r.pd_connector ? ` (KV transfer: \`${r.pd_connector}\`)` : ""}. ${mc || r.infra || r.decode_sidecar ? "Start in this order" : "Start both pools, then the router"}.`);
     const step = (title, description, command) => {
       out.push("", `### ${title}`, "");
       if (description) out.push(description, "");
@@ -91,10 +91,12 @@ function serveSection(r) {
           fence(withEnv(node.env, node.command)), ...dockerNote(node.docker_command));
       }
     }
+    if (r.decode_sidecar) step(r.decode_sidecar.label, r.decode_sidecar.description, r.decode_sidecar.command);
     const defaultPort = r.router?.port === undefined ? "" : 'export ROUTER_PORT="${ROUTER_PORT:-' + r.router.port + '}"\n';
     if (r.router?.command) {
       out.push("", `### ${r.router.label || "Router"}`, "");
       if (r.router.install && !(r.orchestrator_install || []).some((i) => i.command === r.router.install)) out.push(fence(r.router.install), "");
+      if (r.router.description) out.push(r.router.description, "");
       const command = withEnv(r.router.env, r.router.command);
       out.push(fence(defaultPort + command));
     }
@@ -245,7 +247,7 @@ function presetOptions(recipe, strategies) {
 function pdOptions(recipe, resolved, strategies) {
   if (!resolved.options.strategies.includes("pd_cluster")) return [];
   const pd = strategies.pd_cluster;
-  const routers = ["vllm", ...["dynamo", "smg", "ascend"].filter((key) => pd?.[key])];
+  const routers = ["vllm", ...["dynamo", "smg", "llm-d", "ascend"].filter((key) => pd?.[key])];
   const values = (keys) => keys.map((key) => `\`${key}\``).join(", ");
   return [
     "- `prefill_nodes`, `decode_nodes`: dedicated node counts for each pool under `strategy=pd_cluster`.",

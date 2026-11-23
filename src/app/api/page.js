@@ -59,6 +59,12 @@ The same ones the page URL uses. Values the recipe can't run fall back to its de
 Each recipe's Markdown lists the values it accepts under **Other configurations**.
 
 Select the PD router and KV connector independently, subject to catalog compatibility.
+For llm-d, `pd_router=llm-d` selects the non-Kubernetes deployment for NVIDIA TP or TEP
+pools with NIXL and KV offload disabled. Start the pools, run `decode_sidecar.command`
+on the decode head, then run `router.command` on the router host. The recipe consumes
+literal IPv4 addresses for the serving heads. Docker is required for the router and
+the decode sidecar, including when workers use pip.
+
 For Ascend, \`pd_router=ascend\` selects Ascend Router; \`pd_connector=mooncake_ascend\`
 selects Mooncake (Ascend). Each choice requires Ascend hardware, PD disaggregation
 and an active model preset that explicitly declares it in \`select\`.

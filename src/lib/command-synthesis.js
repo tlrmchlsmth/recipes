@@ -1,3 +1,4 @@
+import { llmDRouterCommands } from "./llm-d.js";
 import { applyPresetArgOps, effectivePreset, toggleOwnedFlags, matchingPresets, presetImage, presetPoints, resolvePresetKey, withPreset } from "./recipe-presets.js";
 
 /**
@@ -499,7 +500,7 @@ export function pdConnectorUnavailableReason(connector, hwProfile, router = "vll
   }
   const routers = connector.routers || ["vllm"];
   if (!routers.includes(router)) {
-    const label = { vllm: "vLLM Router", dynamo: "Dynamo", smg: "SMG", ascend: "Ascend Router" };
+    const label = { vllm: "vLLM Router", dynamo: "Dynamo", smg: "SMG", "llm-d": "llm-d", ascend: "Ascend Router" };
     return `${name} works behind ${routers.map((r) => label[r] || r).join(" or ")} only.`;
   }
   return null;
@@ -1698,6 +1699,22 @@ export function dynamoInstallSteps(dynamoCfg) {
   return list.map((x) => (typeof x === "string" ? { command: x } : x)).filter((x) => x?.command);
 }
 
+export function llmDUnsupportedReason(recipe, strategy, pdNodes, kvOffload, hwProfile, hwProfileId) {
+  const config = strategy?.["llm-d"];
+  if (!config) return "llm-d is not configured for this strategy.";
+  if (!config.brands.includes(hwProfile?.brand)) return "llm-d requires NVIDIA hardware in this recipe.";
+  if (kvOffload && kvOffload !== "off") return "llm-d requires NIXL without KV offload. Disable KV offload to use llm-d.";
+  const allowed = pdPoolModes(recipe);
+  for (const role of ["prefill", "decode"]) {
+    const requested = pdNodes?.[role]?.parallelism
+      || pdRoleParallelism(recipe, strategy, role, hwProfile, hwProfileId);
+    if ((allowed.includes(requested) ? requested : allowed[0]) === "dep") {
+      return "llm-d supports TP and TEP pools. Switch both pools away from DEP to use llm-d.";
+    }
+  }
+  return null;
+}
+
 // The first SMG recipe path uses connector-aware HTTP registration. DEP rank
 // routing and composed KV connectors need separate validation before opting in.
 export function smgUnsupportedReason(recipe, strategy, pdNodes, kvOffload, transport = "http", hwProfile = null, hwProfileId = null) {
@@ -1876,7 +1893,12 @@ function resolveCommandImpl(dcpOut, recipe, variantKey, strategyName, hwProfileI
   let smgGrpc = !!smg && pdTransport === "grpc";
   const ascendReason = ascendPdUnavailableReason(strategy, hwProfile, presetSelect, "pd_router");
   const ascend = pdRouter === "ascend" && !ascendReason ? strategy.ascend : null;
-  const routerKey = dynamo ? "dynamo" : smg ? "smg" : ascend ? "ascend" : "vllm";
+  const wantsLlmD = strategy.deploy_type === "pd_cluster" && pdRouter === "llm-d";
+  if (wantsLlmD) {
+    routerUnavailableReason = llmDUnsupportedReason(recipe, strategy, pdNodes, kvOffload, hwProfile, hwProfileId);
+  }
+  const llmD = wantsLlmD && !routerUnavailableReason ? strategy["llm-d"] : null;
+  const routerKey = dynamo ? "dynamo" : smg ? "smg" : ascend ? "ascend" : llmD ? "llm-d" : "vllm";
   const externalDp = strategy[routerKey]?.data_parallel_lb === "external";
   const prefillPcp = pdRoleValue(recipe, "prefill", "pcp", hwProfile, hwProfileId)
     ?? parallelSizeForHardware(strategy.prefill?.pcp, hwProfile, hwProfileId) ?? 1;
@@ -2646,6 +2668,7 @@ function resolveCommandImpl(dcpOut, recipe, variantKey, strategyName, hwProfileI
       }
     }
 
+    if (llmD && roleOverride) env.VLLM_HTTP_TIMEOUT_KEEP_ALIVE = "120";
     if (smgGrpc || ascend) {
       // The SMG-compatible gRPC servicer only runs on the Python frontend.
       env.VLLM_USE_RUST_FRONTEND = "0";
@@ -2888,6 +2911,21 @@ function resolveCommandImpl(dcpOut, recipe, variantKey, strategyName, hwProfileI
           dockerCommand: `docker run --rm --network host --entrypoint python ${shellQuote(image)} ${proxyArgs}`,
         }) };
     }
+    let llmDCommands;
+    if (llmD) {
+      const workerPort = (role, args, expectedRole) => {
+        const finalArgs = dedupeArgs(args);
+        const port = Number(lastFlagValue(finalArgs, "--port") ?? 8000);
+        let kv;
+        try { kv = JSON.parse(lastFlagValue(finalArgs, "--kv-transfer-config")); } catch { /* Invalid config. */ }
+        if (kv?.kv_connector !== "NixlConnector" || kv?.kv_role !== expectedRole || !Number.isInteger(port) || port < 1 || port > 65535) {
+          throw new RangeError(`PD ${role}: llm-d requires a NixlConnector worker with role ${expectedRole} and a valid HTTP port.`);
+        }
+        return port;
+      };
+      llmDCommands = llmDRouterCommands(llmD,
+        workerPort("prefill", prefillArgs, "kv_producer"), workerPort("decode", decodeArgs, "kv_consumer"));
+    }
     const workerDocker = ascend ? { ...pdConnector?.docker, ...ascend.docker } : pdConnector?.docker || null;
     return {
       deployType,
@@ -2905,8 +2943,9 @@ function resolveCommandImpl(dcpOut, recipe, variantKey, strategyName, hwProfileI
         env: buildEnv("decode"),
         ...dMeta,
       },
-      orchestrator: dynamo ? "dynamo" : smg ? "smg" : ascend ? "ascend-proxy" : "vllm-router",
-      pdRouter: dynamo ? "dynamo" : smg ? "smg" : ascend ? "ascend" : "vllm",
+      orchestrator: dynamo ? "dynamo" : smg ? "smg" : ascend ? "ascend-proxy" : llmD ? "llm-d" : "vllm-router",
+      pdRouter: dynamo ? "dynamo" : smg ? "smg" : ascend ? "ascend" : llmD ? "llm-d" : "vllm",
+      ...(llmDCommands ? { decodeSidecar: llmDCommands.decodeSidecar } : {}),
       ...(ascend ? { frontendRequired: "python" } : {}),
       ...(smg ? { transport: smgGrpc ? "grpc" : "http" } : {}),
       ...(smgGrpc ? {
@@ -2936,7 +2975,7 @@ function resolveCommandImpl(dcpOut, recipe, variantKey, strategyName, hwProfileI
               dockerCommand: `${smgReplicaComments}docker run --rm --network host \\\n    ${smgGrpc ? "-v ~/.cache/huggingface:/root/.cache/huggingface \\\n    " : ""}${smg.docker_image} \\\n    ${smgRouterArgs}`,
               dockerInstall: `docker pull ${smg.docker_image}`,
             }),
-          } : ascendRouter || {
+          } : ascendRouter || llmDCommands?.router || {
             command: routerCommand,
             install: "uv pip install vllm-router",
           },
@@ -2954,7 +2993,7 @@ function resolveCommandImpl(dcpOut, recipe, variantKey, strategyName, hwProfileI
         install: dynamoInstallSteps({ install: resolveBrandInstall(pdConnector?.install) }),
         // NIXL advertises the node IP and listens on a side channel in addition
         // to HTTP. Publishing the HTTP port alone would isolate the workers.
-        docker: nativePdPcp ? { ...workerDocker, host_network: true } : workerDocker,
+        docker: nativePdPcp || llmD ? { ...workerDocker, host_network: true } : workerDocker,
       } : null,
       routerConfig: strategy.router || { policy: "round_robin" },
     };

@@ -7,7 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { replaceQuery } from "@/lib/url-state";
 import { Copy, Check, Terminal, Gauge, Sparkles, ChevronDown, Package, Info, Zap, Globe, Wrench, Brain, ExternalLink } from "lucide-react";
 import { HuggingFaceIcon } from "@/components/icons/PlatformLogos";
-import { maxVersion, resolveInstall, isFeatureAllowedForVariant, restoreVariantDefaults, FEATURE_MUTEX, hardwareInstall, hwPipOverride, multiNodeFloor, resolveCommand, recommendStrategy, isPrecisionCompatible, isHardwareSupported, isVariantHardwareSupported, fitsSingleNode, isHardwareScalable, isKvStoreBrandSupported, variantRunsOnHardware, variantVramMinimumGb, pickFittingVariant, pickDefaultHardware, resolveSingleNodeTp, lastIntFlag, computeDockerMeta, cu129DockerImage, LAST_CU129_RELEASE, buildDockerRun, resolveOmniCommand, pdPoolModes, pdPcpDeployment, NATIVE_PD_PCP_KV_OFFLOAD_REASON, pdRoleNodes, pdRoleParallelism, defaultModeFor, isModeSupported, isModeAllowedForVariant, resolveModeKey, isFeatureAllowedForStrategy, isFeatureSupportedOnHardware, isKvOffloadAllowedForStrategy, isKvOffloadSupportedForRecipe, isKvOffloadBrandSupported, isKvOffloadInstallable, isPipInstallAvailable, kvOffloadInstallSteps, resolveKvOffloadOption, strategyAllowsKvOffload, MAX_NODES, nodesForStrategy, isStrategyReachable, isStrategySupportedOnHardware, effectiveCompatibleStrategies, needsMultiNode, multiNodeUnavailable, resolveFrontend, isFrontendSupported, isDynamoSupportedOnHardware, smgUnsupportedReason, pdConnectorUnavailableReason, ascendPdUnavailableReason } from "@/lib/command-synthesis";
+import { maxVersion, resolveInstall, isFeatureAllowedForVariant, restoreVariantDefaults, FEATURE_MUTEX, hardwareInstall, hwPipOverride, multiNodeFloor, resolveCommand, recommendStrategy, isPrecisionCompatible, isHardwareSupported, isVariantHardwareSupported, fitsSingleNode, isHardwareScalable, isKvStoreBrandSupported, variantRunsOnHardware, variantVramMinimumGb, pickFittingVariant, pickDefaultHardware, resolveSingleNodeTp, lastIntFlag, computeDockerMeta, cu129DockerImage, LAST_CU129_RELEASE, buildDockerRun, resolveOmniCommand, pdPoolModes, pdPcpDeployment, NATIVE_PD_PCP_KV_OFFLOAD_REASON, pdRoleNodes, pdRoleParallelism, defaultModeFor, isModeSupported, isModeAllowedForVariant, resolveModeKey, isFeatureAllowedForStrategy, isFeatureSupportedOnHardware, isKvOffloadAllowedForStrategy, isKvOffloadSupportedForRecipe, isKvOffloadBrandSupported, isKvOffloadInstallable, isPipInstallAvailable, kvOffloadInstallSteps, resolveKvOffloadOption, strategyAllowsKvOffload, MAX_NODES, nodesForStrategy, isStrategyReachable, isStrategySupportedOnHardware, effectiveCompatibleStrategies, needsMultiNode, multiNodeUnavailable, resolveFrontend, isFrontendSupported, isDynamoSupportedOnHardware, llmDUnsupportedReason, smgUnsupportedReason, pdConnectorUnavailableReason, ascendPdUnavailableReason } from "@/lib/command-synthesis";
 import { resolveOmniTasks, resolveOmniTaskForHardware } from "@/lib/omni-tasks";
 import { presetPoints, presetSelect, resolvePresetKey, withPreset } from "@/lib/recipe-presets";
 import ShellCode from "@/components/recipes/ShellCode";
@@ -641,7 +641,7 @@ export function CommandBuilder({ recipe, strategies, taxonomy, contextNotes = []
   });
   // PD router selection is only used under pd_cluster.
   const [pdRouter, setPdRouter] = useState(() =>
-    ["dynamo", "smg", "ascend"].includes(searchParams.get("pd_router")) ? searchParams.get("pd_router") : "vllm"
+    ["dynamo", "smg", "llm-d", "ascend"].includes(searchParams.get("pd_router")) ? searchParams.get("pd_router") : "vllm"
   );
   // PD KV transfer connector (pd_cluster.yaml `connectors`); null = the default.
   const [pdConnector, setPdConnector] = useState(() => {
@@ -1667,6 +1667,9 @@ export function CommandBuilder({ recipe, strategies, taxonomy, contextNotes = []
   const smgReason = smgUnsupportedReason(recipe, strategies.pd_cluster, {
     prefill: { parallelism: effPdPrefillPar }, decode: { parallelism: effPdDecodePar },
   }, activeKvOffload);
+  const llmDReason = llmDUnsupportedReason(pdRecipe, strategies.pd_cluster, {
+    prefill: { parallelism: effPdPrefillPar }, decode: { parallelism: effPdDecodePar },
+  }, activeKvOffload, hwProfile, hwId);
   const effPdRouter = result.pdRouter || (result.orchestrator === "smg" ? "smg" : result.orchestrator === "dynamo" ? "dynamo" : "vllm");
   const isSmgGrpc = result.orchestrator === "smg" && result.transport === "grpc";
   const selectPdRouter = (value) => {
@@ -2164,7 +2167,7 @@ export function CommandBuilder({ recipe, strategies, taxonomy, contextNotes = []
   const hwFullName = hwProfile?.brand
     ? `${hwProfile.brand} ${hwProfile.display_name || hwId}`
     : (hwProfile?.display_name || hwId);
-  const statusHeader = hwStatus === "verified" && !activeKvOffload && !["dynamo", "smg", "ascend-proxy"].includes(result.orchestrator) ? (
+  const statusHeader = hwStatus === "verified" && !activeKvOffload && !["dynamo", "smg", "llm-d", "ascend-proxy"].includes(result.orchestrator) ? (
     <span className="text-[11px] font-medium text-green-500 inline-flex items-center gap-1.5">
       <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />
       Verified on {hwFullName}
@@ -3014,7 +3017,7 @@ export function CommandBuilder({ recipe, strategies, taxonomy, contextNotes = []
           {/* PD Router — which orchestrator fronts the prefill/decode pools.
               Nested under Strategy: it only exists for pd_cluster and never
               changes the pools, just the launcher + front door. */}
-          {activeServingStrategy === "pd_cluster" && (strategies.pd_cluster?.dynamo || strategies.pd_cluster?.smg || strategies.pd_cluster?.ascend) && (
+          {activeServingStrategy === "pd_cluster" && (strategies.pd_cluster?.dynamo || strategies.pd_cluster?.smg || strategies.pd_cluster?.["llm-d"] || strategies.pd_cluster?.ascend) && (
             <ConfigRow label="PD Router" nested>
               <PillGroup>
                 <Pill
@@ -3045,6 +3048,15 @@ export function CommandBuilder({ recipe, strategies, taxonomy, contextNotes = []
                 >
                   <span className="font-semibold">SMG</span>
                 </Pill>}
+                {strategies.pd_cluster["llm-d"] && <Pill
+                  active={effPdRouter === "llm-d"}
+                  pressed={effPdRouter === "llm-d"}
+                  disabled={!!pcpDeployment || !!llmDReason}
+                  onClick={() => selectPdRouter("llm-d")}
+                  title={pcpRouterReason || llmDReason || strategies.pd_cluster["llm-d"].description}
+                >
+                  <span className="font-semibold">llm-d</span>
+                </Pill>}
                 {ascendVisible && strategies.pd_cluster.ascend && <Pill
                   active={effPdRouter === "ascend"}
                   pressed={effPdRouter === "ascend"}
@@ -3056,11 +3068,10 @@ export function CommandBuilder({ recipe, strategies, taxonomy, contextNotes = []
                 </Pill>}
               </PillGroup>
               <p className="text-[11px] text-muted-foreground mt-2 leading-snug">
-                {effPdRouter === "dynamo"
-                  ? strategies.pd_cluster.dynamo.description
-                  : effPdRouter === "smg" ? (isSmgGrpc ? "SMG gRPC router with NIXL prefill/decode workers. Supports TP/TEP pools without KV offload." : strategies.pd_cluster.smg.description)
-                  : effPdRouter === "ascend" ? strategies.pd_cluster.ascend.description
-                  : "vllm-router with --vllm-pd-disaggregation fronts the pools; each role is a `vllm serve` on its own HTTP port."}
+                {isSmgGrpc
+                  ? "SMG gRPC router with NIXL prefill/decode workers. Supports TP/TEP pools without KV offload."
+                  : strategies.pd_cluster[effPdRouter]?.description
+                    || "vllm-router with --vllm-pd-disaggregation fronts the pools; each role is a `vllm serve` on its own HTTP port."}
                 {strategies.pd_cluster[effPdRouter]?.docs && (
                   <>
                     {" "}
@@ -4482,6 +4493,7 @@ function PdClusterBlock({ result, verifyCmd, benchCmd, statusHeader, onRankChang
   const [tab, setTab] = useState("prefill");
   const isDynamo = result.orchestrator === "dynamo";
   const isSmg = result.orchestrator === "smg";
+  const hasDecodeSidecar = !!result.decodeSidecar;
   // Dynamo workers launch via `python3 -m dynamo.vllm`, which the
   // vllm-openai image's `vllm serve` entrypoint can't wrap — render them
   // pip-style (install hint above) regardless of install mode.
@@ -4517,9 +4529,10 @@ function PdClusterBlock({ result, verifyCmd, benchCmd, statusHeader, onRankChang
     ...(isDynamo && result.infra ? [{ id: "dyn_infra", label: result.infra.label, command: result.infra.command, env: {}, description: result.infra.description }] : []),
     { id: "prefill", label: "Prefill", command: wrap(result.prefill.command, result.prefill.env), env: result.prefill.env, meta: result.prefill },
     { id: "decode", label: "Decode", command: wrap(result.decode.command, result.decode.env), env: result.decode.env, meta: result.decode },
-    { id: "router", label: result.router.label || "Router", command: routerDocker || result.router.command, env: result.router.env || {}, install: routerDocker ? null : result.router.install, isRouter: true },
+    ...(hasDecodeSidecar ? [{ id: "decode_sidecar", ...result.decodeSidecar }] : []),
+    { id: "router", description: result.router.description, label: result.router.label || "Router", command: routerDocker || result.router.command, env: result.router.env || {}, install: routerDocker ? null : result.router.install, isRouter: true },
     ...(result.registration ? [{ id: "registration", ...result.registration, env: {}, isRouter: true }] : []),
-  ].map((t, i) => (mc || isDynamo || isSmg ? { ...t, step: i + 1 } : t));
+  ].map((t, i) => (mc || isDynamo || isSmg || hasDecodeSidecar ? { ...t, step: i + 1 } : t));
   // When Mooncake is toggled on/off, jump to the leftmost tab so the launch
   // sequence reads left to right (same behavior as SingleCommandBlock's
   // companion tabs).
@@ -4527,7 +4540,7 @@ function PdClusterBlock({ result, verifyCmd, benchCmd, statusHeader, onRankChang
   useEffect(() => {
     setTab(hasMc ? "mc_config" : isDynamo && result.infra ? "dyn_infra" : "prefill");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasMc, isDynamo, isSmg]);
+  }, [hasMc, isDynamo, isSmg, hasDecodeSidecar]);
   const active = tabs.find((t) => t.id === tab) || tabs[0];
   // Docker mode folds env into `-e` flags inside `docker run` for prefill /
   // decode, so no prelude there. Router (and pip mode) keep the export-style
@@ -4621,7 +4634,7 @@ function PdClusterBlock({ result, verifyCmd, benchCmd, statusHeader, onRankChang
           )}
         </div>
       )}
-      {!active.isRouter && <CommandNote note={commandNote} />}
+      {active.meta && <CommandNote note={commandNote} />}
       {prelude && (
         <pre className="px-4 pt-3 pb-1 text-[12px] text-[var(--command-fg)]/70 font-mono leading-relaxed whitespace-pre overflow-x-auto">
           <ShellCode>{prelude}</ShellCode>
